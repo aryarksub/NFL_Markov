@@ -1,0 +1,26 @@
+{
+    "model": "simple_markov",
+    "metrics": {
+        "top_1_accuracy": 0.32462326365955024,
+        "top_3_accuracy": 0.5810173659448639,
+        "top_5_accuracy": 0.7137667537165561,
+        "top_10_accuracy": 0.8688256394102285,
+        "true_first_down_rate": 0.25200942984016017,
+        "first_down_brier": 0.16760637371982576,
+        "first_down_log_loss": 0.5072897567321579,
+        "first_down_roc_auc": 0.705050764039715,
+        "first_down_average_precision": 0.44229797060081033,
+        "point_yards_mae": 5.901864446529081,
+        "point_yards_rmse": 9.80111947745037,
+        "point_yards_correlation": -0.008308952111528376,
+        "point_yards_r2": -0.3796599745294966,
+        "expected_yards_mae": 5.471381619716072,
+        "expected_yards_rmse": 8.284591499575257,
+        "expected_yards_correlation": 0.1280948215701503,
+        "expected_yards_r2": 0.014258828388740596,
+        "yards_plays_evaluated": 170560,
+        "state_log_loss": 2.33987013385774,
+        "state_plays_evaluated": 196822,
+        "state_plays_excluded": 2
+    }
+}

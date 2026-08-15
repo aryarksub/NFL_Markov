@@ -2,7 +2,8 @@ import os
 import pandas as pd
 import numpy as np
 import argparse
-from itertools import product
+
+import src.util as util
 
 PBP_DIR = os.path.join('data', 'pbp')
 
@@ -27,89 +28,6 @@ def bin_column(series, cutpoints, labels):
     )
 
     return binned, bin_ids
-
-def generate_state_ids(
-    state_values,
-    absorbing_states=None,
-    start_id=1,
-):
-    """
-    Generate IDs for the complete Cartesian product of state variables.
-
-    Parameters
-    ----------
-    state_values : dict
-        Dictionary mapping each state variable to all possible values.
-
-        Example:
-        {
-            "down": [1, 2, 3, 4],
-            "binned_ydstogo_id": [1, 2, 3, 4],
-            "binned_field_position_id": list(range(1, 16)),
-        }
-
-    absorbing_states : list[str], optional
-        Absorbing states. Their IDs are assigned immediately after all regular states.
-
-    start_id : int, default=1
-        ID assigned to the first regular state.
-
-    Returns
-    -------
-    state_to_id : dict
-        Maps state tuples -> integer IDs.
-
-    id_to_state : dict
-        Maps integer IDs -> state tuples / absorbing state names.
-
-    absorbing_state_ids : dict
-        Maps absorbing state names -> integer IDs.
-    """
-
-    if absorbing_states is None:
-        absorbing_states = []
-
-    # Preserve the order supplied by the user
-    state_columns = list(state_values.keys())
-
-    # Generate every possible combination
-    all_states = list(
-        product(
-            *(state_values[column] for column in state_columns)
-        )
-    )
-
-    # Regular state IDs
-    state_to_id = {
-        state: start_id + i
-        for i, state in enumerate(all_states)
-    }
-
-    # Reverse lookup
-    id_to_state = {
-        state_id: state
-        for state, state_id in state_to_id.items()
-    }
-
-    # Absorbing states follow regular states
-    next_id = start_id + len(all_states)
-
-    absorbing_state_ids = {
-        state: next_id + i
-        for i, state in enumerate(absorbing_states)
-    }
-
-    # Add absorbing states to reverse lookup
-    id_to_state.update({
-        state_id: state
-        for state, state_id in absorbing_state_ids.items()
-    })
-
-    return (
-        state_to_id,
-        id_to_state,
-        absorbing_state_ids,
-    )
 
 def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
     """
@@ -184,11 +102,10 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
     # 4. Bin yards to go
     # =========================================================
 
-    ydstogo_bins = [0, 3, 7, 10, np.inf]
-    ydstogo_labels = ["1-3", "4-7", "8-10", "11+"]
+    ydstogo_cuts, ydstogo_labels = util.get_ydstogo_cuts_labels()
     df["binned_ydstogo"], df["binned_ydstogo_id"] = bin_column(
         df["ydstogo"],
-        cutpoints=ydstogo_bins,
+        cutpoints=ydstogo_cuts,
         labels=ydstogo_labels
     )
 
@@ -196,12 +113,10 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
     # 5. Bin field position
     # =========================================================
 
-    # 5 yard bins on opponent half, 10 yard bins on own half
-    field_position_bins = [5*i for i in range(10)] + [10*i for i in range(5, 11)]
-    field_position_labels =  [f'{5*i+1}-{5*(i+1)}' for i in range(10)] + [f'{10*i+1}-{10*(i+1)}' for i in range(5, 10)]
+    field_position_cuts, field_position_labels = util.get_field_position_cuts_labels()
     df["binned_field_position"], df["binned_field_position_id"] = bin_column(
         df["yardline_100"],
-        cutpoints=field_position_bins,
+        cutpoints=field_position_cuts,
         labels=field_position_labels
     )
 
@@ -209,15 +124,17 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
     # 6. Current Markov state
     # =========================================================
 
-    state_values = {
-        "down": [1, 2, 3, 4],
-        "binned_ydstogo_id": list(range(1, len(ydstogo_labels) + 1)),
-        "binned_field_position_id": list(range(1, len(field_position_labels) + 1)),
-    }
-    absorbing_states = ["TD", "FG", "PUNT", "TURNOVER", "DOWNS", "HALF_END"]
-    state_to_id, id_to_state, absorbing_state_ids = generate_state_ids(
+    state_values = util.get_state_values(
+        ["down", "binned_ydstogo_id", "binned_field_position_id"],
+        [
+            [1,2,3,4],
+            ydstogo_labels,
+            field_position_labels
+        ]
+    )
+    state_to_id, id_to_state, absorbing_state_ids = util.generate_state_ids(
         state_values=state_values,
-        absorbing_states=absorbing_states,
+        absorbing_states=util.ABSORBING_STATES,
     )
     state_columns = list(state_values.keys())
 
@@ -555,18 +472,22 @@ def create_clean_pbp_file(
     print('Creating clean play-by-play CSV file')
 
     full_csv_path = os.path.join(save_dir, f'pbp_{min(years)}_{max(years)}_full.csv')
-    if save_intermediates:
-        if overwrite or not os.path.exists(full_csv_path):
-            dfs = [
-                pd.read_parquet(os.path.join(PBP_DIR, f'play_by_play_{year}.parquet'), engine='pyarrow')
-                for year in years
-            ]
-            df_full = pd.concat(dfs)
+    if not os.path.exists(full_csv_path) or (save_intermediates and overwrite):
+        dfs = [
+            pd.read_parquet(
+                os.path.join(PBP_DIR, f'play_by_play_{year}.parquet'),
+                engine='pyarrow'
+            )
+            for year in years
+        ]
+        df_full = pd.concat(dfs)
+
+        if save_intermediates:
             print(f'Saving full CSV for years: {years}')
             df_full.to_csv(full_csv_path, index=False)
-        else:
-            print(f'Loading full CSV for years: {years}')
-            df_full = pd.read_csv(full_csv_path)
+    else:
+        print(f'Loading full CSV for years: {years}')
+        df_full = pd.read_csv(full_csv_path)
 
     cols_to_keep = [
         'play_id', 'game_id', 'season_type', 'week', 'posteam', 'posteam_type', 'defteam',
@@ -579,14 +500,16 @@ def create_clean_pbp_file(
     ]
 
     sub_csv_path = os.path.join(save_dir, f'pbp_{min(years)}_{max(years)}_sub.csv')
-    if save_intermediates:
-        if overwrite or not os.path.exists(sub_csv_path):
-            df_sub = df_full[cols_to_keep]
+    if not os.path.exists(sub_csv_path) or (save_intermediates and overwrite):
+        df_sub = df_full[cols_to_keep]
+
+        if save_intermediates:
             print(f'Saving cropped CSV for years: {years}')
             df_sub.to_csv(sub_csv_path, index=False)
-        else:
-            print(f'Loading cropped CSV for years: {years}')
-            df_sub = pd.read_csv(sub_csv_path)
+
+    else:
+        print(f'Loading cropped CSV for years: {years}')
+        df_sub = pd.read_csv(sub_csv_path)
 
     play_csv_path = os.path.join(save_dir, f'pbp_{min(years)}_{max(years)}_plays.csv')
     if overwrite or not os.path.exists(play_csv_path):
