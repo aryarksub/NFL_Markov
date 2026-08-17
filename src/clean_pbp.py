@@ -351,8 +351,63 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
 
     df = df.loc[~df_index.isin(remove_index)].copy()
 
+    ### Drop all drives where the first play is problematic
+    first_play = df["play_number"].eq(1)
+
+    # Conditions that make a drive problematic
+    bad_first_play = (
+        # Drive doesn't start at first down
+        (df["down"] > 1)
+        | (
+            (df["down"] == 1)
+            & (
+                # Drive starts at 1st down and more than 10
+                (df["ydstogo"] > 10)
+                | (
+                    # Drive starts at 1st down and less than 10, but not goal-to-go situation
+                    (df["ydstogo"] < 10)
+                    & (df["ydstogo"] != df["field_position"])
+                )
+            )
+        )
+    )
+
+    # Get the game/drive combinations with a problematic first play
+    bad_drives = df.loc[
+        first_play & bad_first_play,
+        ["game_id", "drive_number"]
+    ].drop_duplicates()
+
+    # Drop all plays belonging to those drives
+    df = df.merge(
+        bad_drives.assign(_bad_drive=True),
+        on=["game_id", "drive_number"],
+        how="left"
+    )
+
+    df = df[df["_bad_drive"].ne(True)].drop(columns="_bad_drive").copy()
+
     # =========================================================
-    # 10. Final columns
+    # 10. Drive result
+    # =========================================================
+
+    # The drive result is the absorbing state of the drive's terminal play. Propagate that result to every 
+    # play in the drive.
+    drive_result = (
+        df.groupby(["game_id", "drive_number"])["absorbing_state"]
+          .transform("last")
+    )
+    drive_result_id = (
+        df.groupby(["game_id", "drive_number"])["absorbing_state_id"]
+          .transform("last")
+    )
+
+    df["drive_result"] = drive_result
+    df["drive_result_id"] = drive_result_id
+    df["drive_success"] = df["drive_result"].isin(["TD", "FG"])
+
+    # =========================================================
+    # 11. Final columns
     # =========================================================
 
     cols_to_keep = [
@@ -414,6 +469,13 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
         "penalty_team",
 
         # -----------------------------------------------------
+        # Drive outcome
+        # -----------------------------------------------------
+        "drive_result",
+        "drive_result_id",
+        "drive_success",
+
+        # -----------------------------------------------------
         # Absorbing-state variables
         # -----------------------------------------------------
         "td_team",
@@ -463,13 +525,246 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
 
     return df[cols_to_keep].copy()
 
-def create_clean_pbp_file(
+def prepare_drive_level_data(plays: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate play-level NFL data into one row per offensive drive.
+
+    Assumes `plays` has already been cleaned and validated and contains
+    the following relevant columns:
+        - game/drive identifiers
+        - state information
+        - absorbing_state
+        - field position
+        - scoring information
+        - time/game context
+        - external game context
+    """
+
+    # Ensure plays are in chronological order
+    plays = plays.sort_values(
+        [
+            "game_date",
+            "game_id",
+            "drive_number",
+            "play_number"
+        ]
+    ).copy()
+
+    # ---------------------------------------------------------
+    # First and last play of each drive
+    # ---------------------------------------------------------
+
+    grouped = plays.groupby(
+        ["game_id", "drive_number"],
+        sort=False
+    )
+
+    first = grouped.first().reset_index()
+    last = grouped.last().reset_index()
+
+    num_plays = (
+        grouped.size()
+        .rename("num_plays")
+        .reset_index()
+    )
+
+    # ---------------------------------------------------------
+    # Start-state information
+    # ---------------------------------------------------------
+
+    df = first[
+        [
+            "game_id",
+            "drive_number",
+            "season",
+            "season_type",
+            "week",
+            "game_date",
+            "posteam",
+            "defteam",
+            "posteam_type",
+
+            "cur_state",
+            "cur_state_id",
+
+            "field_position",
+            "binned_field_position",
+            "binned_field_position_id",
+
+            "game_seconds_remaining",
+            "qtr",
+
+            "posteam_score",
+            "defteam_score",
+            "score_differential",
+
+            "spread_line",
+            "total_line",
+            "surface",
+            "temp",
+            "wind",
+            "weather",
+        ]
+    ].copy()
+
+    df = df.rename(
+        columns={
+            "cur_state": "start_state",
+            "cur_state_id": "start_state_id",
+            "field_position": "start_field_position",
+            "binned_field_position": "start_binned_field_position",
+            "binned_field_position_id": "start_binned_field_position_id",
+            "game_seconds_remaining": "start_time_rem",
+            "qtr": "start_qtr",
+            "posteam_score": "start_posteam_score",
+            "defteam_score": "start_defteam_score",
+            "score_differential": "start_score_differential",
+        }
+    )
+
+    # ---------------------------------------------------------
+    # End-state / outcome information
+    # ---------------------------------------------------------
+
+    end = last[
+        [
+            "game_id",
+            "drive_number",
+            "field_position",
+            "binned_field_position",
+            "binned_field_position_id",
+            "game_seconds_remaining",
+            "qtr",
+            "drive_result",
+            "drive_result_id",
+        ]
+    ].copy()
+
+    end = end.rename(
+        columns={
+            "field_position": "end_field_position",
+            "binned_field_position": "end_binned_field_position",
+            "binned_field_position_id": "end_binned_field_position_id",
+            "game_seconds_remaining": "end_time_rem",
+            "qtr": "end_qtr",
+        }
+    )
+
+    # ---------------------------------------------------------
+    # Combine start and end information
+    # ---------------------------------------------------------
+
+    df = df.merge(
+        end,
+        on=["game_id", "drive_number"],
+        how="inner"
+    )
+
+    df = df.merge(
+        num_plays,
+        on=["game_id", "drive_number"],
+        how="left"
+    )
+
+    # ---------------------------------------------------------
+    # Drive outcome
+    # ---------------------------------------------------------
+
+    df["points"] = (
+        df["drive_result"]
+        .map({
+            "TD": 7,
+            "FG": 3,
+            "PUNT": 0,
+            "HALF_END": 0,
+            "TURNOVER": 0,
+            "DOWNS": 0,
+        })
+        .fillna(0)
+        .astype(int)
+    )
+
+    df["scored"] = df["points"].gt(0)
+    df["td_in_drive"] = df["drive_result"].eq("TD")
+    df["fg_in_drive"] = df["drive_result"].eq("FG")
+
+    # ---------------------------------------------------------
+    # Field-position change
+    # ---------------------------------------------------------
+
+    df["net_field_position_change"] = df["start_field_position"] - df["end_field_position"]
+
+    # ---------------------------------------------------------
+    # Time
+    # ---------------------------------------------------------
+
+    df["time_elapsed"] = df["start_time_rem"] - df["end_time_rem"]
+
+    # ---------------------------------------------------------
+    # Final column order
+    # ---------------------------------------------------------
+
+    cols = [
+        "season",
+        "season_type",
+        "week",
+        "game_id",
+        "game_date",
+        "drive_number",
+        "posteam",
+        "defteam",
+        "posteam_type",
+
+        "start_state",
+        "start_state_id",
+
+        "start_field_position",
+        "start_binned_field_position",
+        "start_binned_field_position_id",
+
+        "drive_result",
+        "drive_result_id",
+        "points",
+        "scored",
+        "td_in_drive",
+        "fg_in_drive",
+
+        "end_field_position",
+        "end_binned_field_position",
+        "end_binned_field_position_id",
+
+        "net_field_position_change",
+
+        "num_plays",
+
+        "start_time_rem",
+        "end_time_rem",
+        "time_elapsed",
+
+        "start_qtr",
+        "end_qtr",
+
+        "start_posteam_score",
+        "start_defteam_score",
+        "start_score_differential",
+
+        "spread_line",
+        "total_line",
+        "surface",
+        "temp",
+        "wind",
+        "weather",
+    ]
+
+    return df[cols].reset_index(drop=True)
+
+def create_clean_pbp_files(
     years=list(range(2006,2026)),
     save_intermediates=True,
     save_dir=PBP_DIR,
     overwrite=False
 ):
-    print('Creating clean play-by-play CSV file')
+    print('Creating clean play-by-play CSV files')
 
     full_csv_path = os.path.join(save_dir, f'pbp_{min(years)}_{max(years)}_full.csv')
     if not os.path.exists(full_csv_path) or (save_intermediates and overwrite):
@@ -522,9 +817,20 @@ def create_clean_pbp_file(
 
     print(df_play_clean.shape)
 
+    drive_csv_path = os.path.join(save_dir, f'pbp_{min(years)}_{max(years)}_drives.csv')
+    if overwrite or not os.path.exists(drive_csv_path):
+        df_drive_clean = prepare_drive_level_data(df_play_clean)
+        print(f'Saving drive-level CSV for years: {years}')
+        df_drive_clean.to_csv(drive_csv_path, index=False)
+    else:
+        print(f'Loading drive-level CSV for years: {years}')
+        df_drive_clean = pd.read_csv(drive_csv_path)
+
+    print(df_drive_clean.shape)
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Create a cleaned NFL play-by-play CSV from yearly parquet files.'
+        description='Create cleaned NFL play-by-play CSVs from yearly parquet files.'
     )
 
     parser.add_argument(
@@ -559,7 +865,7 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
 
-    create_clean_pbp_file(
+    create_clean_pbp_files(
         years=args.years,
         save_intermediates=not args.no_intermediates,
         save_dir=args.save_dir,
