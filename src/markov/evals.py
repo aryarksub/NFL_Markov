@@ -7,8 +7,15 @@ from sklearn.metrics import (
     average_precision_score, 
     mean_absolute_error,
     mean_squared_error,
-    r2_score
+    r2_score,
+    precision_score,
+    recall_score,
+    accuracy_score,
+    f1_score,
+    precision_recall_fscore_support,
 )
+
+from src import util
 
 def predict_proba(
     transition_matrix: pd.DataFrame,
@@ -179,29 +186,15 @@ def evaluate_yards(
     """
 
     # ---------------------------------------------------------
-    # Build field-position-bin midpoint mapping
-    # ---------------------------------------------------------
-
-    field_pos_midpoints = {
-        z: (low + high) / 2
-        for z, (low, high) in field_pos_bins.items()
-    }
-
-    # ---------------------------------------------------------
     # Build state_id -> field-position midpoint mapping
     # ---------------------------------------------------------
 
-    state_to_field_pos = {}
-
-    all_states = set(transition_matrix.index) | set(transition_matrix.columns)
-
-    for state_id in all_states:
-        # TD absorbing state
-        if state_id == 241:
-            state_to_field_pos[state_id] = 0.0
-            break # ignore all other absorbing states that come after
-        _, _, z = id_to_state[state_id]
-        state_to_field_pos[state_id] = field_pos_midpoints[z]
+    state_to_field_pos = util.build_state_to_field_pos(
+        transition_matrix=transition_matrix,
+        id_to_state=id_to_state,
+        field_pos_bins=field_pos_bins,
+        td_state=241
+    )
 
     field_pos = pd.Series(state_to_field_pos)
 
@@ -337,4 +330,83 @@ def evaluate_yards(
             "expected_yards",
         ),
         "yards_plays_evaluated": len(actual_yards),
+    }
+
+def binary_metrics(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    prefix: str,
+) -> dict:
+    """
+    Compute classification metrics for a deterministic binary prediction.
+    """
+
+    return {
+        f"{prefix}_accuracy": accuracy_score(y_true, y_pred),
+        f"{prefix}_precision": precision_score(
+            y_true,
+            y_pred,
+            zero_division=0,
+        ),
+        f"{prefix}_recall": recall_score(
+            y_true,
+            y_pred,
+            zero_division=0,
+        ),
+        f"{prefix}_f1": f1_score(
+            y_true,
+            y_pred,
+            zero_division=0,
+        ),
+        f"{prefix}_actual_rate": y_true.mean(),
+        f"{prefix}_predicted_rate": y_pred.mean(),
+    }
+
+def continuous_metrics(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    prefix: str,
+) -> dict:
+    return {
+        f"{prefix}_mae": mean_absolute_error(y_true, y_pred),
+        f"{prefix}_rmse": np.sqrt(
+            mean_squared_error(y_true, y_pred)
+        ),
+    }
+
+def multiclass_metrics(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    prefix: str = "final_state",
+) -> dict:
+    """
+    Compute multiclass classification metrics.
+    """
+
+    precision_macro, recall_macro, f1_macro, _ = (
+        precision_recall_fscore_support(
+            y_true,
+            y_pred,
+            average="macro",
+            zero_division=0,
+        )
+    )
+
+    precision_weighted, recall_weighted, f1_weighted, _ = (
+        precision_recall_fscore_support(
+            y_true,
+            y_pred,
+            average="weighted",
+            zero_division=0,
+        )
+    )
+
+    return {
+        f"{prefix}_accuracy": accuracy_score(y_true, y_pred),
+        f"{prefix}_macro_precision": precision_macro,
+        f"{prefix}_macro_recall": recall_macro,
+        f"{prefix}_macro_f1": f1_macro,
+        f"{prefix}_weighted_precision": precision_weighted,
+        f"{prefix}_weighted_recall": recall_weighted,
+        f"{prefix}_weighted_f1": f1_weighted,
     }

@@ -1,6 +1,9 @@
 # Large data files
 data/pbp/pbp*.csv
 
+# Metric directories (for each model)
+metrics/*/
+
 # Temporary files
 *temp*
 
