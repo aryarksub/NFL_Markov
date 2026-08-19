@@ -36,7 +36,8 @@ def json_metrics_to_csv(
             data = json.load(f)
 
         row = {
-            "model": data["model"],
+            "model": data.get("model"),
+            "sim_mode": data.get("sim_mode"),
             **data["metrics"],
         }
 
