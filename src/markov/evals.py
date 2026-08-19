@@ -366,13 +366,17 @@ def continuous_metrics(
     y_true: pd.Series,
     y_pred: pd.Series,
     prefix: str,
+    include_brier: bool = False,
 ) -> dict:
-    return {
+    metrics = {
         f"{prefix}_mae": mean_absolute_error(y_true, y_pred),
         f"{prefix}_rmse": np.sqrt(
             mean_squared_error(y_true, y_pred)
         ),
     }
+    if include_brier:
+        metrics[f"{prefix}_brier"] = brier_score_loss(y_true, y_pred)
+    return metrics
 
 def multiclass_metrics(
     y_true: pd.Series,

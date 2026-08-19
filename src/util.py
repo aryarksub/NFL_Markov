@@ -220,6 +220,110 @@ def drive_metrics_from_states(
         "points": points,
         "plays": n_plays,
         "yards_gained": net_field_position_change,
-        "outcome": outcome,
         "final_state": final_state,
     }
+
+def build_max_probability_policy(
+    transition_matrix: pd.DataFrame,
+    absorbing_states: set,
+    max_plays: int,
+) -> tuple[dict[tuple[int, int], float], dict[tuple[int, int], int | None]]:
+    """
+    Build an exact maximum-probability policy for a Markov process.
+
+    For each (state, remaining_plays), computes:
+
+        V[(state, remaining_plays)]
+            = maximum probability of reaching an absorbing state
+              within remaining_plays transitions.
+
+        best_next[(state, remaining_plays)]
+            = next state that achieves that maximum probability.
+
+    Parameters
+    ----------
+    transition_matrix
+        Rows are current states, columns are next states, and values are
+        transition probabilities.
+
+    absorbing_states
+        States at which the process terminates.
+
+    max_plays
+        Maximum number of transitions allowed.
+
+    Returns
+    -------
+    V
+        Dictionary mapping (state, remaining_plays) to the maximum
+        probability of eventually reaching an absorbing state.
+
+    best_next
+        Dictionary mapping (state, remaining_plays) to the next state
+        that maximizes that probability. Absorbing states have value
+        None.
+    """
+    if max_plays < 0:
+        raise ValueError("max_plays must be non-negative.")
+
+    # Precompute positive-probability transitions.
+    transitions: dict[int, list[tuple[int, float]]] = {}
+
+    for state in transition_matrix.index:
+        state = int(state)
+
+        probabilities = transition_matrix.loc[state].dropna()
+        probabilities = probabilities[probabilities > 0]
+
+        transitions[state] = [
+            (int(next_state), float(probability))
+            for next_state, probability in probabilities.items()
+        ]
+
+    V: dict[tuple[int, int], float] = {}
+    best_next: dict[tuple[int, int], int | None] = {}
+
+    # Base case: absorbing states have probability 1 of being "successful"
+    # because they have already reached an absorbing state.
+    for state in absorbing_states:
+        for remaining_plays in range(max_plays + 1):
+            V[(state, remaining_plays)] = 1.0
+            best_next[(state, remaining_plays)] = None
+
+    # With zero plays remaining, a non-absorbing state cannot reach
+    # an absorbing state.
+    for state in transitions:
+        if state not in absorbing_states:
+            V[(state, 0)] = 0.0
+            best_next[(state, 0)] = None
+
+    # Dynamic programming.
+    # When computing remaining_plays = n, all values for n - 1
+    # have already been computed.
+    for remaining_plays in range(1, max_plays + 1):
+        for state, state_transitions in transitions.items():
+            if state in absorbing_states:
+                continue
+
+            if not state_transitions:
+                V[(state, remaining_plays)] = 0.0
+                best_next[(state, remaining_plays)] = None
+                continue
+
+            best_probability = 0.0
+            best_state = None
+
+            for next_state, transition_probability in state_transitions:
+                candidate_probability = (
+                    transition_probability
+                    * V.get((next_state, remaining_plays - 1), 0.0)
+                )
+
+                if candidate_probability > best_probability:
+                    best_probability = candidate_probability
+                    best_state = next_state
+
+            V[(state, remaining_plays)] = best_probability
+            best_next[(state, remaining_plays)] = best_state
+
+    return V, best_next

@@ -3,6 +3,7 @@ import numpy as np
 import os
 import argparse
 import json
+import re
 
 from src.markov import evals
 from src import util
@@ -63,6 +64,7 @@ def simulate_drive_greedy(
     transition_matrix: pd.DataFrame,
     absorbing_states: set = set(util.ABSORBING_STATES_MAP.keys()),
     max_plays: int = 50,
+    **kwargs,
 ) -> list[int]:
     """
     Simulate a drive autoregressively using the maximum-probability (greedy) transition at each state.
@@ -106,6 +108,147 @@ def simulate_drive_greedy(
         f"Last state: {current_state}"
     )
 
+def simulate_drive_sample(
+    start_state: int,
+    transition_matrix: pd.DataFrame,
+    absorbing_states: set = set(util.ABSORBING_STATES_MAP.keys()),
+    max_plays: int = 50,
+    **kwargs,
+) -> list[int]:
+    """
+    Simulate a drive by sampling each transition according to its
+    probability in the transition matrix.
+
+    Each call produces one stochastic realization of the drive. Unlike
+    greedy or maximum-probability simulation, the same starting state
+    may produce different drives across calls.
+
+    Parameters
+    ----------
+    start_state
+        Initial state of the drive.
+
+    transition_matrix
+        Transition probability matrix. Rows correspond to current states
+        and columns correspond to possible next states.
+
+    absorbing_states
+        States at which the drive terminates.
+
+    max_plays
+        Maximum number of transitions to simulate.
+
+    **kwargs
+        Additional arguments accepted for compatibility with other
+        simulation methods. Not used.
+
+    Returns
+    -------
+    list[int]
+        Sequence of states, including the starting state and final
+        absorbing state.
+    """
+    states = [start_state]
+    current_state = start_state
+
+    for _ in range(max_plays):
+        # Stop once we reach an absorbing state.
+        if current_state in absorbing_states:
+            return states
+
+        if current_state not in transition_matrix.index:
+            raise ValueError(
+                f"State {current_state} is not present in transition matrix."
+            )
+
+        probabilities = transition_matrix.loc[current_state]
+
+        # Ignore zero-probability / missing transitions.
+        probabilities = probabilities.dropna()
+        probabilities = probabilities[probabilities > 0]
+
+        if probabilities.empty:
+            raise ValueError(
+                f"State {current_state} has no positive-probability transitions."
+            )
+
+        # Normalize in case the row does not sum to exactly 1 due to
+        # floating-point precision or preprocessing.
+        probabilities = probabilities / probabilities.sum()
+
+        next_state = int(
+            np.random.choice(
+                probabilities.index,
+                p=probabilities.values,
+            )
+        )
+
+        states.append(next_state)
+        current_state = next_state
+
+    raise RuntimeError(
+        f"Drive did not reach an absorbing state within {max_plays} plays. "
+        f"Last state: {current_state}"
+    )
+
+def simulate_drive_max_prob(
+    start_state: int,
+    transition_matrix: pd.DataFrame,
+    absorbing_states: set = set(util.ABSORBING_STATES_MAP.keys()),
+    max_plays: int = 50,
+    **kwargs,
+) -> list[int]:
+    """
+    Reconstruct the exact maximum-probability drive for a starting state.
+
+    `V` and `best_next` must be supplied through `kwargs` and should be
+    precomputed once using `build_max_probability_policy()`.
+
+    `transition_matrix` is retained for interface compatibility with
+    other drive simulation functions but is not used directly.
+    """
+    V = kwargs["V"]
+    best_next = kwargs["best_next"]
+
+    start_key = (start_state, max_plays)
+
+    if start_key not in V:
+        raise ValueError(
+            f"State {start_state} is not present in the precomputed policy."
+        )
+
+    if V[start_key] <= 0:
+        raise RuntimeError(
+            f"No absorbing state is reachable from state {start_state} "
+            f"within {max_plays} plays."
+        )
+
+    states = [start_state]
+    current_state = start_state
+    remaining_plays = max_plays
+
+    while current_state not in absorbing_states:
+        key = (current_state, remaining_plays)
+
+        if key not in best_next:
+            raise RuntimeError(
+                f"No policy entry exists for state {current_state} "
+                f"with {remaining_plays} plays remaining."
+            )
+
+        next_state = best_next[key]
+
+        if next_state is None:
+            raise RuntimeError(
+                f"Could not reconstruct a path from state {current_state}."
+            )
+
+        states.append(next_state)
+        current_state = next_state
+        remaining_plays -= 1
+
+    return states
+
 def compute_drive_level_metrics(
     true_drives_df: pd.DataFrame,
     transition_matrix: pd.DataFrame,
@@ -138,18 +281,31 @@ def compute_drive_level_metrics(
         comparison[f"actual_{metric}"] = test_drives_df[actual_col].values
         comparison[f"pred_{metric}"] = sim_drives[metric].values
 
+    using_averaged_metrics = 'sample' in sim_mode and sim_mode != 'sample1'
+
     # ---------------------------------------------------------
     # Binary outcomes
     # ---------------------------------------------------------
 
     for metric in ["score", "td", "fg"]:
-        drive_metrics.update(
-            evals.binary_metrics(
-                comparison[f"actual_{metric}"],
-                comparison[f"pred_{metric}"],
-                prefix=f'drive_{metric}',
+        if using_averaged_metrics:
+            drive_metrics.update(
+                evals.continuous_metrics(
+                    comparison[f"actual_{metric}"],
+                    comparison[f"pred_{metric}"],
+                    prefix=f'drive_{metric}',
+                    include_brier=True # do Brier since target is binary
+                )
             )
-        )
+        else:    
+            # Cannot use binary measurement on averaged values (they are continuous, not binary)
+            drive_metrics.update(
+                evals.binary_metrics(
+                    comparison[f"actual_{metric}"],
+                    comparison[f"pred_{metric}"],
+                    prefix=f'drive_{metric}',
+                )
+            )
 
     # ---------------------------------------------------------
     # Continuous / count outcomes
@@ -161,6 +317,7 @@ def compute_drive_level_metrics(
                 comparison[f"actual_{metric}"],
                 comparison[f"pred_{metric}"],
                 prefix=f'drive_{metric}',
+                include_brier=False # don't do Brier since target is not binary
             )
         )
 
@@ -197,8 +354,25 @@ def simulate_drives(
     in drive_df.
     """
 
+    sim_kwargs = {}
+    num_sims = 1
+
     if mode == 'greedy':
         sim_func = simulate_drive_greedy
+    elif 'sample' in mode:
+        sim_func = simulate_drive_sample
+        num_sims = int(mode[len('sample'):].strip())
+    elif mode == 'max_prob':
+        sim_func = simulate_drive_max_prob
+        V, best_next = util.build_max_probability_policy(
+            transition_matrix=transition_matrix,
+            absorbing_states=absorbing_states,
+            max_plays=max_plays,
+        )
+        sim_kwargs = {
+            "V": V,
+            "best_next": best_next,
+        }
     else:
         raise ValueError(f"Unsupported drive simulation method: {mode}")
 
@@ -209,20 +383,38 @@ def simulate_drives(
             print(ind)
         start_state = row[start_state_col]
 
-        states = sim_func(
-            start_state=start_state,
-            transition_matrix=transition_matrix,
-            absorbing_states=absorbing_states,
-            max_plays=max_plays,
-        )
+        sample_metrics = []
 
-        metrics = util.drive_metrics_from_states(
-            states=states,
-            state_to_field_pos=state_to_field_pos,
-            absorbing_outcomes=absorbing_outcomes,
-        )
+        for i in range(1, num_sims+1):
+            states = sim_func(
+                start_state=start_state,
+                transition_matrix=transition_matrix,
+                absorbing_states=absorbing_states,
+                max_plays=max_plays,
+                **sim_kwargs
+            )
+
+            metrics = util.drive_metrics_from_states(
+                states=states,
+                state_to_field_pos=state_to_field_pos,
+                absorbing_outcomes=absorbing_outcomes,
+            )
+
+            sample_metrics.append(metrics)
+
+        # Average numeric metrics across stochastic samples.
+        metrics = {}
+        for key in sample_metrics[0]:
+            values = [sample[key] for sample in sample_metrics]
+
+            if key in {"final_state"}:
+                modes = pd.Series(values).mode().tolist()
+                metrics[key] = np.random.choice(modes)
+            else:
+                metrics[key] = np.mean(values)
 
         metrics["start_state"] = start_state
+        # state_sequence is not meaningful when sampling, so it's ok to just set this to the last set of simulated states
         metrics["state_sequence"] = states
 
         results.append(metrics)
@@ -373,6 +565,17 @@ def driver(
     with open(metrics_save_path, "w") as file:
         json.dump(eval_data, file, indent=4)
 
+def parse_sim_mode(value: str) -> str:
+    if value in {"greedy", "max_prob"}:
+        return value
+
+    if re.fullmatch(r"sample\d+", value):
+        return value
+
+    raise argparse.ArgumentTypeError(
+        "sim-mode must be 'greedy', 'max_prob', or 'sample<number>' (e.g. sample10, sample20)"
+    )
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Train and evaluate a Markov chain on PBP data."
@@ -401,10 +604,9 @@ def parse_args():
 
     parser.add_argument(
         "--sim-mode", "--mode", "-sm",
-        type=str,
-        choices=["greedy", "sample", "beam"],
+        type=parse_sim_mode,
         default="greedy",
-        help="Drive simulation mode",
+        help="Drive simulation mode: greedy, max_prob, or sample<N>",
     )
 
     parser.add_argument(
