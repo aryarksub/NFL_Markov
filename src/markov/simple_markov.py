@@ -9,8 +9,8 @@ from src.markov import evals
 from src import util
 
 MODEL_NAME = 'simple_markov'
-METRICS_DIR = os.path.join('metrics', MODEL_NAME)
-os.makedirs(METRICS_DIR, exist_ok=True)
+SIMPLE_MARKOV_METRICS_DIR = os.path.join(util.METRICS_DIR, MODEL_NAME)
+os.makedirs(SIMPLE_MARKOV_METRICS_DIR, exist_ok=True)
 
 def fit_markov_chain(
     df: pd.DataFrame,
@@ -433,7 +433,7 @@ def evaluate_markov_chain(
     """
     Evaluate a Markov chain on held-out data.
     """
-    print('Evaluating Markov chain')
+    print(f'Evaluating Markov chain with drive simulation mode {sim_mode}')
 
     known_current = test_plays_df[cur_col].isin(
         transition_matrix.index
@@ -523,12 +523,14 @@ def evaluate_markov_chain(
 
     if save_sims:
         sim_comp_df.to_csv(
-            os.path.join(METRICS_DIR, f'{MODEL_NAME}_{sim_mode}_sims.csv'),
+            os.path.join(SIMPLE_MARKOV_METRICS_DIR, f'{MODEL_NAME}_{sim_mode}_sims.csv'),
             index=False
         )
 
     return {
-        "model" : f"{MODEL_NAME}_{sim_mode}",
+        "model" : MODEL_NAME,
+        "sim_mode" : sim_mode,
+        "combined_name" : f"{MODEL_NAME}_{sim_mode}",
         "metrics" : metrics
     }
 
@@ -539,7 +541,7 @@ def driver(
     sim_mode='greedy',
     save_sims=False,
 ):
-    metrics_save_path = os.path.join(METRICS_DIR, f'{MODEL_NAME}_{sim_mode}.json')
+    metrics_save_path = os.path.join(SIMPLE_MARKOV_METRICS_DIR, f'{MODEL_NAME}_{sim_mode}.json')
 
     print('Loading plays data from', plays_path)
     df = util.load_data(plays_path)
@@ -552,18 +554,18 @@ def driver(
 
     print('Loading drives data from', drives_path)
     drives_df = util.load_data(drives_path, plays_df=False)
+    test_drives_df = drives_df[drives_df["season"] > yr_cutpoint]
 
     eval_data = evaluate_markov_chain(
         transition_matrix=transition_matrix,
         test_plays_df=test_df,
-        test_drives_df=drives_df,
+        test_drives_df=test_drives_df,
         sim_mode=sim_mode,
         save_sims=save_sims
     )
 
-    # os.makedirs(os.path.dirname(metrics_save_path), exist_ok=True)
     with open(metrics_save_path, "w") as file:
-        json.dump(eval_data, file, indent=4)
+        json.dump(util.round_floats(eval_data, 3), file, indent=4)
 
 def parse_sim_mode(value: str) -> str:
     if value in {"greedy", "max_prob"}:

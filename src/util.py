@@ -16,6 +16,7 @@ ABSORBING_STATES_MAP = {
     245: "DOWNS",
     246: "HALF_END",
 }
+METRICS_DIR = os.path.join('metrics')
 
 def load_data(path: str, plays_df=True) -> pd.DataFrame:
     """
@@ -35,6 +36,17 @@ def load_data(path: str, plays_df=True) -> pd.DataFrame:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
     return df
+
+def round_floats(obj, decimals=3):
+    if isinstance(obj, float):
+        return round(obj, decimals)
+    elif isinstance(obj, dict):
+        return {key: round_floats(value, decimals) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [round_floats(value, decimals) for value in obj]
+    elif isinstance(obj, tuple):
+        return tuple(round_floats(value, decimals) for value in obj)
+    return obj
 
 def get_ydstogo_cuts_labels():
     ydstogo_cuts = [0, 3, 7, 10, np.inf]
