@@ -351,6 +351,29 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
 
     df = df.loc[~df_index.isin(remove_index)].copy()
 
+    # Drop all drives where there is a play transition too far forward (1st -> 3rd/4th, 2nd -> 4th)
+    df = df.sort_values(["game_id", "drive_number", "play_number"])
+
+    # Next play's down within each drive
+    df["next_down"] = df.groupby(
+        ["game_id", "drive_number"]
+    )["down"].shift(-1)
+
+    # Identify drives containing a 1->3, 1->4, or 2->4 transition
+    transition_mask = (
+        ((df["down"] == 1) & (df["next_down"].isin([3, 4]))) |
+        ((df["down"] == 2) & (df["next_down"] == 4))
+    )
+
+    matching_drives = df.loc[transition_mask, ["game_id", "drive_number"]].drop_duplicates()
+    df = df.merge(
+        matching_drives.assign(remove_drive=True),
+        on=["game_id", "drive_number"],
+        how="left"
+    )
+
+    df = df[df["remove_drive"].isna()].drop(columns="remove_drive").copy()
+
     ### Drop all drives where the first play is problematic
     first_play = df["play_number"].eq(1)
 
