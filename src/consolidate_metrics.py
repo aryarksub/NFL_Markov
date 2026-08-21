@@ -38,6 +38,8 @@ def json_metrics_to_csv(
         row = {
             "model": data.get("model"),
             "sim_mode": data.get("sim_mode"),
+            "split_mode": data.get("split_mode"),
+            "combined_name": data.get("combined_name"),
             **data["metrics"],
         }
 
@@ -51,6 +53,26 @@ def json_metrics_to_csv(
     df.to_csv(output_path, index=False)
 
     print(f"Wrote {len(df)} rows to {output_path}")
+
+def main(
+    directory,
+    exclude_strings,
+    output_path
+):
+    if str(output_path) == str(ALL_METRICS_CSV):
+        response = input(
+            f"Are you sure you want to overwrite the output at the default path {ALL_METRICS_CSV}? [Y/N]: "
+        ).strip().lower()
+
+        if response != "y":
+            print("Operation cancelled. Please rerun the program.")
+            return
+
+    json_metrics_to_csv(
+        directory=directory,
+        exclude_strings=exclude_strings,
+        output_path=output_path,
+    )
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -81,28 +103,7 @@ def parse_args():
     )
 
     args = parser.parse_args()
-    return args
-
-def main(
-    directory,
-    exclude_strings,
-    output_path
-):
-    if str(output_path) == str(ALL_METRICS_CSV):
-        response = input(
-            f"Are you sure you want to overwrite the output at the default path {ALL_METRICS_CSV}? [Y/N]: "
-        ).strip().lower()
-
-        if response != "y":
-            print("Operation cancelled. Please rerun the program.")
-            return
-
-    json_metrics_to_csv(
-        directory=directory,
-        exclude_strings=exclude_strings,
-        output_path=output_path,
-    )
-    
+    return args    
 
 if __name__ == "__main__":
     args = parse_args()

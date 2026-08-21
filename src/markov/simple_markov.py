@@ -377,10 +377,10 @@ def simulate_drives(
         raise ValueError(f"Unsupported drive simulation method: {mode}")
 
     results = []
+    proc_rows = 0
 
-    for ind, row in drive_df.iterrows():
-        if ind % 5000 == 0:
-            print(ind)
+    print(f'Processed 0/{len(drive_df)} drives')
+    for _, row in drive_df.iterrows():
         start_state = row[start_state_col]
 
         sample_metrics = []
@@ -418,6 +418,9 @@ def simulate_drives(
         metrics["state_sequence"] = states
 
         results.append(metrics)
+        proc_rows += 1
+        if proc_rows % 5000 == 0 or proc_rows == len(drive_df):
+            print(f'Processed {proc_rows}/{len(drive_df)} drives')
 
     return pd.DataFrame(results)
 
@@ -427,7 +430,7 @@ def evaluate_markov_chain(
     test_drives_df: pd.DataFrame,
     cur_col: str = "cur_state_id",
     next_col: str = "next_state_id",
-    sim_mode: str = "greedy",
+    sim_mode: str = "sample1",
     save_sims: bool = False,
 ) -> dict:
     """
@@ -530,42 +533,71 @@ def evaluate_markov_chain(
     return {
         "model" : MODEL_NAME,
         "sim_mode" : sim_mode,
-        "combined_name" : f"{MODEL_NAME}_{sim_mode}",
         "metrics" : metrics
     }
+
 
 def driver(
     plays_path=util.PLAYS_PATH,
     drives_path=util.DRIVES_PATH,
-    yr_cutpoint=2020,
-    sim_mode='greedy',
+    train_test_split_modes=['all', 'yearly', 'bundle', 'cut2020'],
+    train_frac=0.75,
+    sim_mode='sample1',
     save_sims=False,
 ):
-    metrics_save_path = os.path.join(SIMPLE_MARKOV_METRICS_DIR, f'{MODEL_NAME}_{sim_mode}.json')
-
     print('Loading plays data from', plays_path)
-    df = util.load_data(plays_path)
-
-    print('Splitting data at', yr_cutpoint)
-    train_df = df[df["season"] <= yr_cutpoint]
-    test_df = df[df["season"] > yr_cutpoint]
-
-    transition_matrix = fit_markov_chain(train_df)
+    plays_df = util.load_data(plays_path)
 
     print('Loading drives data from', drives_path)
     drives_df = util.load_data(drives_path, plays_df=False)
-    test_drives_df = drives_df[drives_df["season"] > yr_cutpoint]
 
-    eval_data = evaluate_markov_chain(
-        transition_matrix=transition_matrix,
-        test_plays_df=test_df,
-        test_drives_df=test_drives_df,
-        sim_mode=sim_mode,
-        save_sims=save_sims
-    )
+    for train_test_split_mode in train_test_split_modes:
+        metrics_dir = os.path.join(SIMPLE_MARKOV_METRICS_DIR, train_test_split_mode)
+        os.makedirs(metrics_dir, exist_ok=True)
+        metrics_save_path = os.path.join(
+            metrics_dir, 
+            f'{MODEL_NAME}_{sim_mode}_{train_test_split_mode}.json'
+        )
 
-    with open(metrics_save_path, "w") as file:
-        json.dump(util.round_floats(eval_data, 3), file, indent=4)
+        train_plays_dfs, test_plays_dfs, test_drives_dfs = util.get_train_test_sets(
+            plays_df=plays_df,
+            drives_df=drives_df,
+            split_mode=train_test_split_mode,
+            train_frac=train_frac
+        )
+
+        eval_data_list = []
+        weights = []
+
+        for train_plays_df, test_plays_df, test_drives_df in zip(
+            train_plays_dfs,
+            test_plays_dfs,
+            test_drives_dfs,
+        ):
+            print(f"Training on {len(train_plays_df)} plays, evaluating on {len(test_plays_df)} plays and {len(test_drives_df)} drives.")
+
+            transition_matrix = fit_markov_chain(train_plays_df)
+
+            eval_data = evaluate_markov_chain(
+                transition_matrix=transition_matrix,
+                test_plays_df=test_plays_df,
+                test_drives_df=test_drives_df,
+                sim_mode=sim_mode,
+                save_sims=save_sims,
+            )
+            eval_data["split_mode"] = train_test_split_mode
+            eval_data["combined_name"] = f"{MODEL_NAME}_{sim_mode}_{train_test_split_mode}"
+
+            eval_data_list.append(eval_data)
+            weights.append(len(test_plays_df))
+            
+        eval_data = util.weighted_average_eval_data(
+            eval_data_list,
+            weights,
+        )
+
+        with open(metrics_save_path, "w") as file:
+            json.dump(util.round_floats(eval_data, 3), file, indent=4)
 
 def parse_sim_mode(value: str) -> str:
     if value in {"greedy", "max_prob"}:
@@ -577,6 +609,28 @@ def parse_sim_mode(value: str) -> str:
     raise argparse.ArgumentTypeError(
         "sim-mode must be 'greedy', 'max_prob', or 'sample<number>' (e.g. sample10, sample20)"
     )
+
+def parse_train_test_split_modes(value: str) -> list[str]:
+    modes = [mode.strip() for mode in value.split(",")]
+
+    if not modes or any(not mode for mode in modes):
+        raise argparse.ArgumentTypeError(
+            "train-test-split-mode must contain one or more modes"
+        )
+
+    for mode in modes:
+        if mode in {"all", "yearly", "bundle"}:
+            continue
+
+        if re.fullmatch(r"cut\d+", mode):
+            continue
+
+        raise argparse.ArgumentTypeError(
+            f"invalid train-test-split-mode '{mode}': "
+            "must be 'all', 'yearly', 'bundle', or 'cut<number>' (e.g. cut2020)"
+        )
+
+    return modes
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -596,18 +650,25 @@ def parse_args():
         default=util.DRIVES_PATH,
         help="Path to the drives data file.",
     )
+    
+    parser.add_argument(
+        "--train-test-split-modes", "--split-modes", "-ttsm",
+        type=parse_train_test_split_modes,
+        default=["all", "yearly", "bundle", "cut2020"],
+        help="Train/Test split modes, comma-separated: all, yearly, bundle, or cut<YEAR>",
+    )
 
     parser.add_argument(
-        "--yr-cutpoint", '--yr-cut',
-        type=int,
-        default=2020,
-        help="Last season included in training data. Seasons after this are used for testing.",
+        "--train-frac", "--tfrac",
+        type=float,
+        default=0.75,
+        help="Fraction of games to use in training dataset",
     )
 
     parser.add_argument(
         "--sim-mode", "--mode", "-sm",
         type=parse_sim_mode,
-        default="greedy",
+        default="sample1",
         help="Drive simulation mode: greedy, max_prob, or sample<N>",
     )
 
@@ -627,7 +688,8 @@ if __name__ == "__main__":
     driver(
         plays_path=args.plays_path,
         drives_path=args.drives_path,
-        yr_cutpoint=args.yr_cutpoint,
+        train_test_split_modes=args.train_test_split_modes,
+        train_frac=args.train_frac,
         sim_mode=args.sim_mode,
         save_sims=args.save_sims,
     )

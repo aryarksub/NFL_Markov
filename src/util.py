@@ -339,3 +339,165 @@ def build_max_probability_policy(
             best_next[(state, remaining_plays)] = best_state
 
     return V, best_next
+
+def get_train_test_sets(
+    plays_df, drives_df, split_mode='all', train_frac=0.75, random_state=12
+):
+    print(f'Getting train/test sets using split mode "{split_mode}" with training fraction of games = {train_frac}')
+
+    if not 0 < train_frac < 1:
+        raise ValueError('train_frac must be between 0 and 1.')
+
+    # drives_df is smaller, so use it to get the unique games.
+    games_df = drives_df[['season', 'game_id']].drop_duplicates()
+
+    def split_games(games):
+        """Randomly split a dataframe of games into train/test games."""
+        n_train = int(len(games) * train_frac)
+
+        # Shuffle the games reproducibly before splitting.
+        shuffled = games.sample(frac=1, random_state=random_state)
+
+        train_games = shuffled.iloc[:n_train]
+        test_games = shuffled.iloc[n_train:]
+
+        return train_games, test_games
+
+    def get_game_mask(df, games):
+        """Return a mask selecting rows whose (season, game_id) is in games."""
+        return df.set_index(['season', 'game_id']).index.isin(
+            games.set_index(['season', 'game_id']).index
+        )
+
+    # All games: one random train/test split across the entire dataset.
+    if split_mode == 'all':
+        train_games, test_games = split_games(games_df)
+
+        train_plays_dfs = [
+            plays_df.loc[get_game_mask(plays_df, train_games)].copy()
+        ]
+        test_plays_dfs = [
+            plays_df.loc[get_game_mask(plays_df, test_games)].copy()
+        ]
+        test_drives_dfs = [
+            drives_df.loc[get_game_mask(drives_df, test_games)].copy()
+        ]
+
+    # Yearly: independently split the games within each season.
+    # Bundle: same split as yearly, but concatenate all seasons together.
+    elif split_mode in {'yearly', 'bundle'}:
+        train_plays_dfs = []
+        test_plays_dfs = []
+        test_drives_dfs = []
+
+        for season in sorted(games_df['season'].unique()):
+            season_games = games_df[games_df['season'] == season]
+            train_games, test_games = split_games(season_games)
+
+            train_plays_dfs.append(
+                plays_df.loc[get_game_mask(plays_df, train_games)].copy()
+            )
+            test_plays_dfs.append(
+                plays_df.loc[get_game_mask(plays_df, test_games)].copy()
+            )
+            test_drives_dfs.append(
+                drives_df.loc[get_game_mask(drives_df, test_games)].copy()
+            )
+
+        if split_mode == 'bundle':
+            train_plays_dfs = [pd.concat(train_plays_dfs, ignore_index=True)]
+            test_plays_dfs = [pd.concat(test_plays_dfs, ignore_index=True)]
+            test_drives_dfs = [pd.concat(test_drives_dfs, ignore_index=True)]
+
+    # Cut<Year>: train on seasons <= Year, test on seasons > Year.
+    elif split_mode.startswith('cut'):
+        try:
+            cut_year = int(split_mode[3:])
+        except ValueError:
+            raise ValueError(
+                f"Invalid split mode '{split_mode}'. Expected format 'cut<Year>', e.g. 'cut2020'."
+            )
+
+        train_games = games_df[games_df['season'] <= cut_year]
+        test_games = games_df[games_df['season'] > cut_year]
+
+        train_plays_dfs = [
+            plays_df.loc[get_game_mask(plays_df, train_games)].copy()
+        ]
+        test_plays_dfs = [
+            plays_df.loc[get_game_mask(plays_df, test_games)].copy()
+        ]
+        test_drives_dfs = [
+            drives_df.loc[get_game_mask(drives_df, test_games)].copy()
+        ]
+
+    else:
+        raise ValueError(
+            f"Unknown split_mode '{split_mode}'. Expected 'all', 'yearly', 'bundle', or 'cut<Year>'."
+        )
+
+    return train_plays_dfs, test_plays_dfs, test_drives_dfs
+
+def weighted_average_eval_data(eval_data_list, weights):
+    """
+    Combine evaluation results from multiple test sets using weighted averages.
+
+    Parameters
+    ----------
+    eval_data_list : list[dict]
+        Evaluation dictionaries returned by evaluate_markov_chain().
+    weights : list[int | float]
+        Weight for each evaluation, typically the number of samples in
+        the corresponding test set.
+
+    Returns
+    -------
+    dict
+        Aggregated evaluation results.
+    """
+    if len(eval_data_list) != len(weights):
+        raise ValueError("eval_data_list and weights must have the same length.")
+
+    if len(eval_data_list) == 0:
+        raise ValueError("eval_data_list cannot be empty.")
+
+    total_weight = sum(weights)
+    if total_weight == 0:
+        raise ValueError("Total weight must be greater than zero.")
+
+    # The outer metadata should be the same across evaluations.
+    result = {
+        "model": eval_data_list[0]["model"],
+        "sim_mode": eval_data_list[0]["sim_mode"],
+        "split_mode": eval_data_list[0]["split_mode"],
+        "combined_name": eval_data_list[0]["combined_name"],
+    }
+
+    # Aggregate metrics.
+    metrics = {}
+
+    metric_keys = eval_data_list[0]["metrics"].keys()
+
+    for key in metric_keys:
+        values = [eval_data["metrics"][key] for eval_data in eval_data_list]
+
+        # Counts should be summed rather than averaged.
+        if 'evaluated' in key or 'excluded' in key:
+            metrics[key] = sum(values)
+        # Numeric metrics get a weighted average.
+        elif all(isinstance(v, (int, float)) for v in values):
+            metrics[key] = sum(
+                value * weight
+                for value, weight in zip(values, weights)
+            ) / total_weight
+        else:
+            # For non-numeric values, require them to be identical.
+            if not all(value == values[0] for value in values):
+                raise ValueError(
+                    f"Cannot aggregate metric '{key}': values differ across evaluations."
+                )
+            metrics[key] = values[0]
+
+    result["metrics"] = metrics
+
+    return result
