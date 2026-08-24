@@ -7,6 +7,9 @@ metrics/*/
 # Temporary files
 *temp*
 
+# Plots
+plots/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
