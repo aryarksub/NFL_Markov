@@ -442,6 +442,7 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
         "week",
         "game_id",
         "game_date",
+        "desc",
 
         # -----------------------------------------------------
         # Drive/play identifiers
