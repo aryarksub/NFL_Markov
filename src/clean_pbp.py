@@ -538,7 +538,8 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
         "surface",
         "temp",
         "wind",
-        "weather"
+        "weather",
+        "roof"
     ]
 
     # Only retain columns that exist in the source dataframe
@@ -628,6 +629,7 @@ def prepare_drive_level_data(plays: pd.DataFrame) -> pd.DataFrame:
             "temp",
             "wind",
             "weather",
+            "roof"
         ]
     ].copy()
 
@@ -778,6 +780,7 @@ def prepare_drive_level_data(plays: pd.DataFrame) -> pd.DataFrame:
         "temp",
         "wind",
         "weather",
+        "roof"
     ]
 
     return df[cols].reset_index(drop=True)
@@ -815,7 +818,7 @@ def create_clean_pbp_files(
         'fumble_lost', 'interception', 'safety', 'fourth_down_failed',
         'posteam_score', 'defteam_score', 'score_differential', 'season', 'penalty', 'penalty_team',
         'ep', 'wp', 'vegas_wp', 'spread_line', 'total_line', 'surface', 'temp', 'wind', "weather",
-        'quarter_seconds_remaining', 'half_seconds_remaining', 'game_seconds_remaining', "desc"
+        'quarter_seconds_remaining', 'half_seconds_remaining', 'game_seconds_remaining', "desc", "roof"
     ]
 
     sub_csv_path = os.path.join(save_dir, f'pbp_{min(years)}_{max(years)}_sub.csv')
