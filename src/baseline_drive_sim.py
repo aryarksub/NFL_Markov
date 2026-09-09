@@ -36,9 +36,11 @@ def sim_drive(
     curr_play_for_model = create_curr_play_for_model(curr_state)
     #Predict the action
     action = action_model.predict(curr_play_for_model[['yardline_100', 'ydstogo', 'down']])[0]
+    curr_state.action_taken = action
     while action == 'GO':
         #Predict the yards gained
         yds_gained = yards_gained_model.predict(curr_play_for_model)[0]
+        curr_state.yards_predicted = yds_gained
         new_down = 0
         new_yds_to_go = 0
         #If it's 4th down and you don't get enough for a first, end drive
@@ -61,4 +63,5 @@ def sim_drive(
         curr_play_for_model = create_curr_play_for_model(curr_state)
         #Predict the next action
         action = action_model.predict(curr_play_for_model[['yardline_100', 'ydstogo', 'down']])[0]
-    return drive
+        curr_state.action_taken = action
+    return {'drive' : drive}
