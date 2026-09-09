@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 from itertools import product
 
-PLAYS_PATH = os.path.join('data', 'pbp', 'pbp_2006_2025_plays.csv')
-DRIVES_PATH = os.path.join('data', 'pbp', 'pbp_2006_2025_drives.csv')
+PLAYS_PATH = os.path.join('data', 'pbp', 'pbp_2005_2025_plays.csv')
+DRIVES_PATH = os.path.join('data', 'pbp', 'pbp_2005_2025_drives.csv')
 METRICS_DIR = 'metrics'
 ABSORBING_STATES = ["TD", "FG", "PUNT", "TURNOVER", "DOWNS", "HALF_END"]
 ABSORBING_STATES_MAP = {

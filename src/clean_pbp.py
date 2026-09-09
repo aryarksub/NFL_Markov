@@ -864,7 +864,7 @@ def parse_args():
         '--years', "-yrs", '-y',
         nargs='+',
         type=int,
-        default=list(range(2006, 2026)),
+        default=list(range(2005, 2026)),
         help='Years to process. Defaults to 2006 through 2025.'
     )
     parser.add_argument(
