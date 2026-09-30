@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import argparse
+import json
 
 import src.util as util
 
@@ -430,6 +431,21 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
     df["drive_success"] = df["drive_result"].isin(["TD", "FG"])
 
     # =========================================================
+    # 10. Precipitation
+    # =========================================================
+    
+    # Create rain and snow binary columns for tracking precipitation
+    df['first_weather'] = df['weather'].str.split('Temp').str[0].str.strip()
+    with open('precipitation_mapping.json', 'r') as file:
+        precip_dict = json.load(file)
+    df['precipitation'] = df['first_weather'].map(precip_dict)
+    df['rain'] = (df['precipitation'] == 'Rain')
+    df['snow'] = (df['precipitation'] == 'Snow')
+    df = df.drop('first_weather', axis = 1)
+    df = df.drop('precipitation', axis = 1)
+    
+
+    # =========================================================
     # 11. Final columns
     # =========================================================
 
@@ -539,6 +555,8 @@ def prepare_play_level_data(pbp: pd.DataFrame) -> pd.DataFrame:
         "temp",
         "wind",
         "weather",
+        "rain",
+        "snow",
         "roof"
     ]
 
@@ -629,6 +647,8 @@ def prepare_drive_level_data(plays: pd.DataFrame) -> pd.DataFrame:
             "temp",
             "wind",
             "weather",
+            "rain",
+            "snow",
             "roof"
         ]
     ].copy()
@@ -779,6 +799,8 @@ def prepare_drive_level_data(plays: pd.DataFrame) -> pd.DataFrame:
         "surface",
         "temp",
         "wind",
+        "rain",
+        "snow",
         "weather",
         "roof"
     ]
